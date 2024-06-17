@@ -1,6 +1,9 @@
+import json
 import os
 import time
+import shutil
 
+import gc
 import click
 import torch
 import requests
@@ -12,21 +15,32 @@ from transformers import (
     HfArgumentParser,
     Trainer,
     TrainingArguments,
+    file_utils,
 )
 
 from dotenv import load_dotenv
+from pathlib import Path
 from core.collator import SFTDataCollator
 from core.dataset import UnifiedSFTDataset
 from core.template import template_dict
+from core.hf_utils import download_lora_config, download_lora_repo
+from core.constant import SUPPORTED_BASE_MODELS
 from tenacity import retry, stop_after_attempt, wait_exponential
 from client.fed_ledger import FedLedger
+from peft import PeftModel
 
 load_dotenv()
-TIME_SLEEP = int(os.getenv("TIME_SLEEP", 10))
+TIME_SLEEP = int(os.getenv("TIME_SLEEP", 60 * 10))
+ASSIGNMENT_LOOKUP_INTERVAL = 60 * 3  # 3 minutes
 FLOCK_API_KEY = os.getenv("FLOCK_API_KEY")
 if FLOCK_API_KEY is None:
     raise ValueError("FLOCK_API_KEY is not set")
 LOSS_FOR_MODEL_PARAMS_EXCEED = 999.0
+HF_TOKEN = os.getenv("HF_TOKEN")
+if HF_TOKEN is None:
+    raise ValueError(
+        "You need to set HF_TOKEN to download some gated model from HuggingFace"
+    )
 
 
 @retry(
@@ -99,7 +113,30 @@ def load_model(model_name_or_path: str, val_args: TrainingArguments) -> Trainer:
         use_cache=False,
         device_map=None,
     )
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
+    # check whether it is a lora weight
+    if download_lora_config(model_name_or_path):
+        logger.info("Repo is a lora weight, loading model with adapter weights")
+        with open("lora/adapter_config.json", "r") as f:
+            adapter_config = json.load(f)
+        base_model = adapter_config["base_model_name_or_path"]
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model, token=HF_TOKEN, **model_kwargs
+        )
+        # download the adapter weights
+        download_lora_repo(model_name_or_path)
+        model = PeftModel.from_pretrained(
+            model,
+            "lora",
+            device_map=None,
+        )
+        model = model.merge_and_unload()
+        logger.info("Loaded model with adapter weights")
+    # assuming full fine-tuned model
+    else:
+        logger.info("Repo is a full fine-tuned model, loading model directly")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path, token=HF_TOKEN, **model_kwargs
+        )
 
     if "output_router_logits" in model.config.to_dict():
         logger.info("set output_router_logits as True")
@@ -124,6 +161,35 @@ def load_sft_dataset(
     template = template_dict[template_name]
     logger.info("Loading data with UnifiedSFTDataset")
     return UnifiedSFTDataset(eval_file, tokenizer, max_seq_length, template)
+
+
+def clean_model_cache(
+    auto_clean_cache: bool, cache_path: str = file_utils.default_cache_path
+):
+    """
+    Cleans up the local model cache directory by removing directories that are not
+    listed in SUPPORTED_BASE_MODELS.
+
+    Parameters:
+    - auto_clean_cache (bool): A flag to determine whether to clean the cache.
+    - cache_path (str): The path to the cache directory. Defaults to file_utils.default_cache_path.
+    """
+    if not auto_clean_cache:
+        return
+
+    try:
+        cache_path = Path(cache_path)
+        for item in cache_path.iterdir():
+            if item.is_dir() and item.name.startswith("models"):
+                if item.name not in {
+                    f"models--{BASE_MODEL.replace('/', '--')}"
+                    for BASE_MODEL in SUPPORTED_BASE_MODELS
+                }:
+                    shutil.rmtree(item)
+                    logger.info(f"Removed directory: {item}")
+        logger.info("Successfully cleaned up the local model cache")
+    except (OSError, shutil.Error) as e:
+        logger.error(f"Failed to clean up the local model cache: {e}")
 
 
 @click.group()
@@ -168,55 +234,83 @@ def validate(
             "assignment_id is required for submitting validation result to the server"
         )
 
-    fed_ledger = FedLedger(FLOCK_API_KEY)
-    parser = HfArgumentParser(TrainingArguments)
-    val_args = parser.parse_json_file(json_file=validation_args_file)[0]
+    try:
+        fed_ledger = FedLedger(FLOCK_API_KEY)
+        parser = HfArgumentParser(TrainingArguments)
+        val_args = parser.parse_json_file(json_file=validation_args_file)[0]
 
-    tokenizer = load_tokenizer(model_name_or_path)
-    eval_dataset = load_sft_dataset(
-        eval_file, context_length, template_name=base_model, tokenizer=tokenizer
-    )
-    model = load_model(model_name_or_path, val_args)
-    # if the number of parameters exceeds the limit, submit a validation result with a large loss
-    total = sum(p.numel() for p in model.parameters())
-    if total > max_params:
-        logger.error(
-            f"Total model params: {total} exceeds the limit {max_params}, submitting validation result with a large loss"
+        tokenizer = load_tokenizer(model_name_or_path)
+        eval_dataset = load_sft_dataset(
+            eval_file, context_length, template_name=base_model, tokenizer=tokenizer
         )
+        model = load_model(model_name_or_path, val_args)
+        # if the number of parameters exceeds the limit, submit a validation result with a large loss
+        total = sum(p.numel() for p in model.parameters())
+        if total > max_params:
+            logger.error(
+                f"Total model params: {total} exceeds the limit {max_params}, submitting validation result with a large loss"
+            )
+            if local_test:
+                return
+            resp = fed_ledger.submit_validation_result(
+                assignment_id=assignment_id,
+                loss=LOSS_FOR_MODEL_PARAMS_EXCEED,
+            )
+            # check response is 200
+            if resp.status_code != 200:
+                logger.error(f"Failed to submit validation result: {resp.content}")
+            return
+        data_collator = SFTDataCollator(tokenizer, max_seq_length=context_length)
+
+        trainer = Trainer(
+            model=model,
+            args=val_args,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
+
+        eval_result = trainer.evaluate()
+        eval_loss = eval_result["eval_loss"]
+        logger.info("evaluate result is %s" % str(eval_result))
         if local_test:
+            logger.info("The model can be correctly validated by validators.")
             return
         resp = fed_ledger.submit_validation_result(
             assignment_id=assignment_id,
-            loss=LOSS_FOR_MODEL_PARAMS_EXCEED,
+            loss=eval_loss,
         )
         # check response is 200
         if resp.status_code != 200:
             logger.error(f"Failed to submit validation result: {resp.content}")
-        return
-    data_collator = SFTDataCollator(tokenizer, max_seq_length=context_length)
-
-    trainer = Trainer(
-        model=model,
-        args=val_args,
-        eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-    )
-
-    eval_result = trainer.evaluate()
-    eval_loss = eval_result["eval_loss"]
-    logger.info("evaluate result is %s" % str(eval_result))
-    if local_test:
-        logger.info("The model can be correctly validated by validators.")
-        return
-    resp = fed_ledger.submit_validation_result(
-        assignment_id=assignment_id,
-        loss=eval_loss,
-    )
-    # check response is 200
-    if resp.status_code != 200:
-        logger.error(f"Failed to submit validation result: {resp.content}")
-        return
+            if resp.json() == {
+                "detail": "Validation assignment is not in validating status"
+            }:
+                logger.info(
+                    "Validation assignment is not in validating status anymore, marking it as failed"
+                )
+                fed_ledger.mark_assignment_as_failed(assignment_id)
+            return
+        logger.info(
+            f"Successfully submitted validation result for assignment {assignment_id}"
+        )
+    except (OSError, RuntimeError) as e:
+        # log the type of the exception
+        logger.error(f"An error occurred while validating the model: {e}")
+        # fail this assignment
+        fed_ledger.mark_assignment_as_failed(assignment_id)
+    # raise for other exceptions
+    except Exception as e:
+        raise e
+    finally:
+        # offload the model to save memory
+        gc.collect()
+        model.cpu()
+        del model, eval_dataset
+        torch.cuda.empty_cache()
+        # remove lora folder
+        if os.path.exists("lora"):
+            os.system("rm -rf lora")
 
 
 @click.command()
@@ -231,34 +325,86 @@ def validate(
     type=str,
     help="The id of the task",
 )
-def loop(validation_args_file: str, task_id: str = None):
-    fed_ledger = FedLedger(FLOCK_API_KEY)
-
+@click.option(
+    "--auto_clean_cache",
+    type=bool,
+    default=True,
+    help="Auto clean the model cache except for the base model",
+)
+def loop(validation_args_file: str, task_id: str = None, auto_clean_cache: bool = True):
     if task_id is None:
         raise ValueError("task_id is required for asking assignment_id")
+    if auto_clean_cache:
+        logger.info("Auto clean the model cache except for the base model")
+    else:
+        logger.info("Skip auto clean the model cache")
+
+    fed_ledger = FedLedger(FLOCK_API_KEY)
+    task_id_list = task_id.split(",")
+    logger.info(f"Validating task_id: {task_id_list}")
+    last_successful_request_time = [time.time()] * len(task_id_list)
 
     while True:
-        resp = fed_ledger.request_validation_assignment(task_id)
-        if resp.status_code != 200:
-            logger.error(f"Failed to ask assignment_id: {resp.content}")
-            time.sleep(TIME_SLEEP)
+        clean_model_cache(auto_clean_cache)
+
+        for index, task_id_num in enumerate(task_id_list):
+            resp = fed_ledger.request_validation_assignment(task_id_num)
+            if resp.status_code == 200:
+                last_successful_request_time[index] = time.time()
+                break
+            else:
+                logger.error(f"Failed to ask assignment_id: {resp.content}")
+                if resp.json() == {
+                    "detail": "Rate limit reached for validation assignment lookup: 1 per 3 minutes"
+                }:
+                    time_since_last_success = (
+                        time.time() - last_successful_request_time[index]
+                    )
+                    if time_since_last_success < ASSIGNMENT_LOOKUP_INTERVAL:
+                        time_to_sleep = (
+                            ASSIGNMENT_LOOKUP_INTERVAL - time_since_last_success
+                        )
+                        logger.info(f"Sleeping for {int(time_to_sleep)} seconds")
+                        time.sleep(time_to_sleep)
+                    continue
+                else:
+                    logger.info(f"Sleeping for {int(TIME_SLEEP)} seconds")
+                    time.sleep(TIME_SLEEP)
+                    continue
+
+        if resp is None or resp.status_code != 200:
             continue
+
         resp = resp.json()
         eval_file = download_file(resp["data"]["validation_set_url"])
-        ctx = click.Context(validate)
-        ctx.invoke(
-            validate,
-            model_name_or_path=resp["task_submission"]["data"]["hg_repo_id"],
-            base_model=resp["data"]["base_model"],
-            eval_file=eval_file,
-            context_length=resp["data"]["context_length"],
-            max_params=resp["data"]["max_params"],
-            validation_args_file=validation_args_file,
-            assignment_id=resp["id"],
-            local_test=False,
-        )
+        assignment_id = resp["id"]
+
+        for attempt in range(3):
+            try:
+                ctx = click.Context(validate)
+                ctx.invoke(
+                    validate,
+                    model_name_or_path=resp["task_submission"]["data"]["hg_repo_id"],
+                    base_model=resp["data"]["base_model"],
+                    eval_file=eval_file,
+                    context_length=resp["data"]["context_length"],
+                    max_params=resp["data"]["max_params"],
+                    validation_args_file=validation_args_file,
+                    assignment_id=resp["id"],
+                    local_test=False,
+                )
+                break  # Break the loop if no exception
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                if attempt == 2:
+                    logger.error(
+                        f"Marking assignment {assignment_id} as failed after 3 attempts"
+                    )
+                    fed_ledger.mark_assignment_as_failed(assignment_id)
+
         os.remove(eval_file)
-        time.sleep(TIME_SLEEP)
 
 
 cli.add_command(validate)
