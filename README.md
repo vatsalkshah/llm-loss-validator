@@ -73,5 +73,10 @@ bash start.sh \
 ```powershell
 cd /src
 $env:CUDA_VISIBLE_DEVICES=0
-powershell -File .\start.ps1 -hf_token <your_hf_token> -flock_api_key <your_flock_api_key> -task_id <your_task_id> -validation_args_file validation_config.json.example -other_args @("--auto_clean_cache", "False")
+powershell -File .\start.ps1 `
+-hf_token <your_hf_token> `
+-flock_api_key <your_flock_api_key> `
+-task_id <your_task_id> `
+-validation_args_file validation_config.json.example `
+-other_args @("--auto_clean_cache", "False")
 ```
