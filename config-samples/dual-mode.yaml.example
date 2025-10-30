@@ -1,0 +1,51 @@
+# ============================================================================
+# Dual-mode (validation + inference) configuration blueprint
+# This YAML template is intended for orchestration tools (Kubernetes, Nomad, etc)
+# that prefer declarative configuration. When using src/start.sh directly,
+# convert the relevant values into KEY=VALUE pairs or source the companion
+# dual-mode.env.example file.
+# ============================================================================
+
+mode: dual
+credentials:
+  hf_token: YOUR_HF_TOKEN
+  flock_api_key: YOUR_FLOCK_API_KEY
+
+validation:
+  task_ids: "8,9"
+  validation_args_file: validation_config.json.example
+  auto_clean_cache: true
+  lora_only: true
+
+inference:
+  uvicorn_app: src.inference.server:app  # Use --inference-module when invoking start.sh
+  bind_host: 0.0.0.0
+  bind_port: 8000
+  max_concurrent_requests: 8
+  request_timeout_seconds: 300
+  endpoints:
+    sync: /v1/generate
+    streaming: /v1/generate/stream
+
+cache:
+  directory: /data/huggingface-cache
+  limit_bytes: 34359738368  # 32 GiB
+  eviction_policy: lru
+
+telemetry:
+  url: https://telemetry.example.com/ingest
+  heartbeat_endpoint: https://fed-ledger-prod.flock.io/api/v1/worker-heartbeat
+  heartbeat_interval_seconds: 60
+  payload:
+    include_gpu_stats: true
+    include_cache_usage: true
+  tls:
+    enabled: true
+    cert_path: /etc/ssl/certs/worker.crt
+    key_path: /etc/ssl/private/worker.key
+    ca_path: /etc/ssl/certs/root_ca.pem
+
+notes:
+  - Ensure WORKER_MODE=dual is exported when using the bash launcher.
+  - Set INFERENCE_MODULE or INFERENCE_COMMAND so the API server starts correctly.
+  - Mount TLS materials read-only and update the paths above if you terminate TLS at the worker.
