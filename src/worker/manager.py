@@ -49,6 +49,10 @@ class DualModeWorker:
         inference_port: int = 8000,
         polling_interval: int = 180,
         telemetry_interval: int = 60,
+        telemetry_webhook: Optional[str] = None,
+        telemetry_location: Optional[str] = None,
+        telemetry_worker_id: Optional[str] = None,
+        telemetry_enabled: Optional[bool] = None,
         lora_only: bool = True,
     ):
         """
@@ -107,7 +111,13 @@ class DualModeWorker:
         # Telemetry reporter
         self._telemetry = TelemetryReporter(
             state=self._state,
+            cache_manager=self._cache_manager,
+            fed_ledger=self._fed_ledger,
             interval=telemetry_interval,
+            webhook_url=telemetry_webhook,
+            location=telemetry_location,
+            worker_id=telemetry_worker_id,
+            enabled=telemetry_enabled,
         )
         
         # Uvicorn server
@@ -253,6 +263,10 @@ async def run_worker(
     inference_port: int = 8000,
     polling_interval: int = 180,
     telemetry_interval: int = 60,
+    telemetry_webhook: Optional[str] = None,
+    telemetry_location: Optional[str] = None,
+    telemetry_worker_id: Optional[str] = None,
+    telemetry_enabled: Optional[bool] = None,
     lora_only: bool = True,
 ):
     """
@@ -270,6 +284,10 @@ async def run_worker(
         inference_port=inference_port,
         polling_interval=polling_interval,
         telemetry_interval=telemetry_interval,
+        telemetry_webhook=telemetry_webhook,
+        telemetry_location=telemetry_location,
+        telemetry_worker_id=telemetry_worker_id,
+        telemetry_enabled=telemetry_enabled,
         lora_only=lora_only,
     )
     

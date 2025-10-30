@@ -308,5 +308,72 @@ class TestFedLedgerExistingMethods(unittest.TestCase):
         self.assertEqual(payload["status"], "failed")
 
 
+class TestFedLedgerTelemetry(unittest.TestCase):
+    def setUp(self):
+        self.api_key = "test-api-key"
+        self.client = FedLedger(self.api_key)
+        self.payload = {
+            "timestamp": 123.0,
+            "status": {"mode": "idle"},
+        }
+
+    @patch("src.client.fed_ledger.requests.post")
+    def test_report_worker_heartbeat_success(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_post.return_value = mock_response
+
+        result = self.client.report_worker_heartbeat(self.payload)
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        self.assertIn("telemetry/heartbeat", mock_post.call_args[0][0])
+        self.assertEqual(mock_post.call_args[1]["json"], self.payload)
+
+    @patch("src.client.fed_ledger.requests.post")
+    def test_report_worker_heartbeat_not_available(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_post.return_value = mock_response
+
+        result = self.client.report_worker_heartbeat(self.payload)
+
+        self.assertFalse(result)
+
+    @patch("src.client.fed_ledger.requests.post")
+    def test_report_worker_heartbeat_service_unavailable(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+        mock_post.return_value = mock_response
+
+        result = self.client.report_worker_heartbeat(self.payload)
+
+        self.assertFalse(result)
+
+    @patch("src.client.fed_ledger.requests.post")
+    def test_report_worker_heartbeat_timeout(self, mock_post):
+        mock_post.side_effect = requests.exceptions.Timeout()
+
+        result = self.client.report_worker_heartbeat(self.payload)
+
+        self.assertFalse(result)
+
+    @patch("src.client.fed_ledger.requests.post")
+    def test_report_worker_heartbeat_connection_error(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+
+        result = self.client.report_worker_heartbeat(self.payload)
+
+        self.assertFalse(result)
+
+    @patch("src.client.fed_ledger.requests.post")
+    def test_report_worker_heartbeat_unexpected_exception(self, mock_post):
+        mock_post.side_effect = Exception("boom")
+
+        result = self.client.report_worker_heartbeat(self.payload)
+
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()

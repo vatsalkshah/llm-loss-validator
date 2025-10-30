@@ -214,3 +214,52 @@ class FedLedger:
         except Exception as e:
             logger.warning(f"Error reporting command execution: {e}")
             return False
+
+    def report_worker_heartbeat(self, payload: Dict) -> bool:
+        """
+        Publish a worker heartbeat payload to the Fed Ledger backend.
+
+        This is a stub integration point that allows the backend to ingest
+        worker telemetry (status, cache contents, GPU availability, etc.).
+
+        Args:
+            payload: Telemetry payload to submit
+
+        Returns:
+            True if the heartbeat was accepted, False otherwise
+        """
+        try:
+            url = f"{self.url}/telemetry/heartbeat"
+            response = requests.post(
+                url,
+                headers=self.headers,
+                json=payload,
+                timeout=10,
+            )
+
+            if response.status_code in (200, 202):
+                logger.debug("FedLedger heartbeat accepted")
+                return True
+            if response.status_code == 404:
+                logger.debug("Telemetry heartbeat endpoint not available (404)")
+                return False
+            if response.status_code == 503:
+                logger.warning("Telemetry heartbeat service unavailable (503)")
+                return False
+
+            logger.warning(
+                "Unexpected response from telemetry heartbeat endpoint",
+                status_code=response.status_code,
+                body=response.text,
+            )
+            return False
+
+        except requests.exceptions.Timeout:
+            logger.warning("Telemetry heartbeat request timed out")
+            return False
+        except requests.exceptions.ConnectionError:
+            logger.warning("Cannot reach telemetry heartbeat endpoint")
+            return False
+        except Exception as e:
+            logger.warning(f"Error reporting telemetry heartbeat: {e}")
+            return False

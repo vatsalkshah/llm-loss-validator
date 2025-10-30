@@ -432,7 +432,27 @@ def loop(
     "--telemetry_interval",
     type=int,
     default=60,
-    help="Telemetry reporting interval in seconds (default: 60)",
+    envvar="TELEMETRY_INTERVAL_SECONDS",
+    show_default=True,
+    help="Telemetry reporting interval in seconds.",
+)
+@click.option(
+    "--telemetry_webhook",
+    type=str,
+    envvar="TELEMETRY_WEBHOOK_URL",
+    help="HTTPS endpoint for posting heartbeat telemetry (optional).",
+)
+@click.option(
+    "--telemetry_location",
+    type=str,
+    envvar="TELEMETRY_LOCATION",
+    help="Location metadata to include in heartbeat telemetry (optional).",
+)
+@click.option(
+    "--telemetry_worker_id",
+    type=str,
+    envvar="TELEMETRY_WORKER_ID",
+    help="Explicit worker identifier to include with telemetry payloads.",
 )
 @click.option(
     "--lora_only",
@@ -447,6 +467,9 @@ def worker(
     inference_port: int,
     polling_interval: int,
     telemetry_interval: int,
+    telemetry_webhook: str,
+    telemetry_location: str,
+    telemetry_worker_id: str,
     lora_only: bool,
 ):
     """
@@ -463,6 +486,13 @@ def worker(
     logger.info(f"Task IDs: {task_id}")
     logger.info(f"Inference endpoint: {inference_host}:{inference_port}")
     logger.info(f"Polling interval: {polling_interval}s")
+    logger.info(f"Telemetry interval: {telemetry_interval}s")
+    if telemetry_location:
+        logger.info(f"Telemetry location: {telemetry_location}")
+    if telemetry_webhook:
+        logger.info("Telemetry webhook configured")
+    if telemetry_worker_id:
+        logger.info(f"Telemetry worker ID: {telemetry_worker_id}")
     
     try:
         asyncio.run(
@@ -475,6 +505,9 @@ def worker(
                 inference_port=inference_port,
                 polling_interval=polling_interval,
                 telemetry_interval=telemetry_interval,
+                telemetry_webhook=telemetry_webhook,
+                telemetry_location=telemetry_location,
+                telemetry_worker_id=telemetry_worker_id,
                 lora_only=lora_only,
             )
         )
