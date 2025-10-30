@@ -2,6 +2,13 @@
 
 Validator that computes the validation loss for a huggingface-compatible LLM
 
+## Features
+
+- **Validation Service**: Compute validation losses for HuggingFace-compatible LLMs
+- **Inference API**: OpenAI-compatible REST API for model inference with streaming support
+- **Model Cache Management**: Efficient model caching and loading with configurable eviction policies
+- **LoRA Support**: Full support for LoRA adapters with automatic base model detection
+
 ## Environment Setup
 
 We recommand you to use `conda` to manage the python env for this repo.
@@ -82,6 +89,17 @@ CUDA_VISIBLE_DEVICES=0 FLOCK_API_KEY="<your-api-key>" python validate.py validat
 --assignment_id <assignment-id> \
 --validation_args_file validation_config.json.example
 ```
+
+## Inference API Server
+
+The project includes an OpenAI-compatible inference API implemented with FastAPI. To run the server:
+
+```bash
+cd src
+python -m server.main
+```
+
+Configuration options, endpoint details, and usage examples are available in [docs/inference-api.md](docs/inference-api.md).
 
 ## Optional: Installing FlashAttention
 
