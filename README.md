@@ -5,6 +5,7 @@ Validator that computes the validation loss for a huggingface-compatible LLM
 ## Features
 
 - **Validation Service**: Compute validation losses for HuggingFace-compatible LLMs
+- **Dual-Mode Worker**: Coordinate validation assignments and inference serving with priority scheduling
 - **Inference API**: OpenAI-compatible REST API for model inference with streaming support
 - **Model Cache Management**: Efficient model caching and loading with configurable eviction policies
 - **LoRA Support**: Full support for LoRA adapters with automatic base model detection
@@ -89,6 +90,27 @@ CUDA_VISIBLE_DEVICES=0 FLOCK_API_KEY="<your-api-key>" python validate.py validat
 --assignment_id <assignment-id> \
 --validation_args_file validation_config.json.example
 ```
+
+## Dual-Mode Worker
+
+Run validation and inference in a single process with priority scheduling:
+
+```bash
+cd src
+python validate.py worker --task_id 1,2,3 --validation_args_file validation_config.json.example
+```
+
+Key options:
+
+- `--inference_host`: Host for inference server (default `0.0.0.0`)
+- `--inference_port`: Port for inference server (default `8000`)
+- `--polling_interval`: Validation polling interval in seconds (default `180`)
+- `--telemetry_interval`: Telemetry logging interval in seconds (default `60`)
+- `--lora_only`: Whether to validate only LoRA submissions (default `True`)
+
+Operators transitioning from `loop` can reuse existing arguments and gain an inference endpoint.
+
+Additional details are available in [docs/dual-mode-worker.md](docs/dual-mode-worker.md).
 
 ## Inference API Server
 

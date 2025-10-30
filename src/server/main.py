@@ -10,7 +10,10 @@ import uuid
 import time
 import json
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from worker.inference_guard import InferenceActivityTracker
 
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -39,6 +42,7 @@ from core.model_cache import ModelCacheManager
 # Global state
 model_loader: Optional[ModelLoader] = None
 cache_manager: Optional[ModelCacheManager] = None
+activity_tracker: Optional[object] = None  # InferenceActivityTracker from worker module
 
 
 @asynccontextmanager
@@ -258,105 +262,136 @@ async def chat_completions(
     and non-streaming responses.
     """
     await verify_api_key(api_key)
-    
-    if not model_loader:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Server not initialized"
-        )
-    
-    # Validate max_tokens
-    if request.max_tokens and request.max_tokens > config.max_gen_tokens_limit:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"max_tokens exceeds limit of {config.max_gen_tokens_limit}"
-        )
-    
-    # Check if model is cached (if rejection is enabled)
-    if config.reject_non_cached_models:
-        revision = "main"  # Could be extended to support revision in request
-        if not cache_manager.is_model_cached(request.model, revision):
+
+    # Acquire inference slot if tracker is present
+    tracker = activity_tracker
+    acquired = False
+    if tracker is not None:
+        try:
+            # Import locally to avoid circular dependency at module import time
+            from worker.inference_guard import InferenceBusyError
+
+            await tracker.acquire()
+            acquired = True
+        except InferenceBusyError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Inference service temporarily unavailable (validation in progress)",
+            )
+
+    try:
+        if not model_loader:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Server not initialized",
+            )
+
+        # Validate max_tokens
+        if request.max_tokens and request.max_tokens > config.max_gen_tokens_limit:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"max_tokens exceeds limit of {config.max_gen_tokens_limit}",
+            )
+
+        # Check if model is cached (if rejection is enabled)
+        if config.reject_non_cached_models:
+            revision = "main"  # Could be extended to support revision in request
+            if not cache_manager.is_model_cached(request.model, revision):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Model {request.model} is not cached. Please cache the model first.",
+                )
+
+        # Load model
+        try:
+            model, tokenizer = model_loader.load_model(
+                model_id=request.model,
+                revision="main",  # Could be extended
+            )
+        except ModelNotCachedError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Model {request.model} is not cached. Please cache the model first."
+                detail=f"Model {request.model} not found in cache",
             )
-    
-    # Load model
-    try:
-        model, tokenizer = model_loader.load_model(
-            model_id=request.model,
-            revision="main",  # Could be extended
-        )
-    except ModelNotCachedError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model {request.model} not found in cache"
-        )
-    except Exception as e:
-        logger.error(f"Error loading model {request.model}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to load model: {str(e)}"
-        )
-    
-    # Create generator
-    generator = TextGenerator(
-        model=model,
-        tokenizer=tokenizer,
-        model_id=request.model,
-    )
-    
-    # Handle streaming vs non-streaming
-    if request.stream:
-        return StreamingResponse(
-            generate_stream_response(request, generator),
-            media_type="text/event-stream",
-        )
-    else:
-        # Non-streaming generation
-        try:
-            result = generator.generate(
-                messages=request.messages,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                max_tokens=request.max_tokens,
-                stop=request.stop,
-                presence_penalty=request.presence_penalty,
-                frequency_penalty=request.frequency_penalty,
-            )
-            
-            completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-            created_time = int(time.time())
-            
-            response = ChatCompletionResponse(
-                id=completion_id,
-                created=created_time,
-                model=request.model,
-                choices=[
-                    ChatCompletionChoice(
-                        index=0,
-                        message=ChatMessage(
-                            role=ChatMessageRole.ASSISTANT,
-                            content=result["text"],
-                        ),
-                        finish_reason="stop",
-                    )
-                ],
-                usage=ChatCompletionUsage(
-                    prompt_tokens=result["prompt_tokens"],
-                    completion_tokens=result["completion_tokens"],
-                    total_tokens=result["total_tokens"],
-                ),
-            )
-            
-            return response
-            
         except Exception as e:
-            logger.error(f"Error during generation: {e}")
+            logger.error(f"Error loading model {request.model}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Generation failed: {str(e)}"
+                detail=f"Failed to load model: {str(e)}",
             )
+
+        # Create generator
+        generator = TextGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            model_id=request.model,
+        )
+
+        # Handle streaming vs non-streaming
+        if request.stream:
+            release_tracker = tracker
+
+            async def stream_with_release():
+                try:
+                    async for chunk in generate_stream_response(request, generator):
+                        yield chunk
+                finally:
+                    if release_tracker is not None:
+                        await release_tracker.release()
+
+            acquired = False  # Will be released by stream context
+            return StreamingResponse(
+                stream_with_release(),
+                media_type="text/event-stream",
+            )
+        else:
+            # Non-streaming generation
+            try:
+                result = generator.generate(
+                    messages=request.messages,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    max_tokens=request.max_tokens,
+                    stop=request.stop,
+                    presence_penalty=request.presence_penalty,
+                    frequency_penalty=request.frequency_penalty,
+                )
+
+                completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+                created_time = int(time.time())
+
+                response = ChatCompletionResponse(
+                    id=completion_id,
+                    created=created_time,
+                    model=request.model,
+                    choices=[
+                        ChatCompletionChoice(
+                            index=0,
+                            message=ChatMessage(
+                                role=ChatMessageRole.ASSISTANT,
+                                content=result["text"],
+                            ),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=ChatCompletionUsage(
+                        prompt_tokens=result["prompt_tokens"],
+                        completion_tokens=result["completion_tokens"],
+                        total_tokens=result["total_tokens"],
+                    ),
+                )
+
+                return response
+
+            except Exception as e:
+                logger.error(f"Error during generation: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Generation failed: {str(e)}",
+                )
+    finally:
+        if tracker is not None and acquired:
+            await tracker.release()
 
 
 @app.exception_handler(Exception)
@@ -367,6 +402,24 @@ async def global_exception_handler(request, exc):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"error": "Internal server error", "detail": str(exc)}
     )
+
+
+def create_app_with_tracker(tracker: Optional[object] = None) -> FastAPI:
+    """
+    Create a FastAPI app with an optional activity tracker.
+    
+    This factory function allows the dual-mode worker to inject
+    an InferenceActivityTracker for coordinating with validation jobs.
+    
+    Args:
+        tracker: Optional InferenceActivityTracker instance
+        
+    Returns:
+        Configured FastAPI application
+    """
+    global activity_tracker
+    activity_tracker = tracker
+    return app
 
 
 if __name__ == "__main__":

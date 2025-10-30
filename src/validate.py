@@ -397,8 +397,97 @@ def loop(
         os.remove(eval_file)
 
 
+@click.command()
+@click.option(
+    "--validation_args_file",
+    type=str,
+    default="validation_config.json.example",
+    help="Path to validation config JSON",
+)
+@click.option(
+    "--task_id",
+    type=str,
+    required=True,
+    help="Comma-separated task IDs to validate",
+)
+@click.option(
+    "--inference_host",
+    type=str,
+    default="0.0.0.0",
+    help="Host for inference server",
+)
+@click.option(
+    "--inference_port",
+    type=int,
+    default=8000,
+    help="Port for inference server",
+)
+@click.option(
+    "--polling_interval",
+    type=int,
+    default=180,
+    help="Validation polling interval in seconds (default: 180)",
+)
+@click.option(
+    "--telemetry_interval",
+    type=int,
+    default=60,
+    help="Telemetry reporting interval in seconds (default: 60)",
+)
+@click.option(
+    "--lora_only",
+    type=bool,
+    default=True,
+    help="Only validate LoRA models",
+)
+def worker(
+    validation_args_file: str,
+    task_id: str,
+    inference_host: str,
+    inference_port: int,
+    polling_interval: int,
+    telemetry_interval: int,
+    lora_only: bool,
+):
+    """
+    Run the dual-mode worker.
+    
+    Coordinates validation assignments and inference serving in a single process,
+    with validation jobs getting priority while allowing in-flight inference
+    requests to complete before pre-emption.
+    """
+    import asyncio
+    from worker.manager import run_worker
+    
+    logger.info("Starting dual-mode worker")
+    logger.info(f"Task IDs: {task_id}")
+    logger.info(f"Inference endpoint: {inference_host}:{inference_port}")
+    logger.info(f"Polling interval: {polling_interval}s")
+    
+    try:
+        asyncio.run(
+            run_worker(
+                flock_api_key=FLOCK_API_KEY,
+                hf_token=HF_TOKEN,
+                validation_args_file=validation_args_file,
+                task_id=task_id,
+                inference_host=inference_host,
+                inference_port=inference_port,
+                polling_interval=polling_interval,
+                telemetry_interval=telemetry_interval,
+                lora_only=lora_only,
+            )
+        )
+    except KeyboardInterrupt:
+        logger.info("Worker interrupted by user")
+    except Exception as e:
+        logger.error(f"Fatal error in worker: {e}")
+        raise
+
+
 cli.add_command(validate)
 cli.add_command(loop)
+cli.add_command(worker)
 
 if __name__ == "__main__":
     cli()
