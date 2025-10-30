@@ -28,9 +28,9 @@ The dual-mode worker consists of several components:
    - Coordinates with WorkerState for priority
 
 4. **TelemetryReporter** (`worker/telemetry.py`)
-   - Periodic status reporting
-   - Logs worker health metrics
-   - Configurable reporting interval
+   - Wraps `core.telemetry.HeartbeatReporter` for background heartbeats
+   - Publishes structured telemetry to FedLedger and optional HTTPS webhooks
+   - Exposes the latest snapshot for other components and logs outcomes
 
 5. **DualModeWorker** (`worker/manager.py`)
    - Main orchestrator class
@@ -75,6 +75,9 @@ python src/validate.py worker \
 - `--inference_port`: Port for inference server (default: `8000`)
 - `--polling_interval`: Validation polling interval in seconds (default: `180`)
 - `--telemetry_interval`: Telemetry reporting interval in seconds (default: `60`)
+- `--telemetry_webhook`: HTTPS endpoint for heartbeat telemetry (optional)
+- `--telemetry_location`: Location metadata to attach to heartbeat payloads (optional)
+- `--telemetry_worker_id`: Override worker identifier in telemetry payloads (optional)
 - `--lora_only`: Only validate LoRA models (default: `True`)
 
 ### Environment Variables
@@ -87,6 +90,11 @@ Optional:
 - `CACHE_DIR`: Model cache directory
 - `CACHE_MAX_SIZE_GB`: Maximum cache size in GB
 - `CACHE_EVICTION_STRATEGY`: Eviction strategy (LRU, FIFO, SIZE)
+- `TELEMETRY_ENABLED`: Set to `false` to disable heartbeat publishing
+- `TELEMETRY_INTERVAL_SECONDS`: Override telemetry cadence (seconds)
+- `TELEMETRY_WEBHOOK_URL`: HTTPS endpoint for receiving heartbeat payloads
+- `TELEMETRY_LOCATION`: Location metadata attached to telemetry
+- `TELEMETRY_WORKER_ID`: Explicit worker identifier to report in telemetry
 
 ## Backward Compatibility
 
@@ -145,23 +153,13 @@ pytest tests/worker/test_dual_mode_worker.py -v
 
 ## Monitoring
 
-The telemetry reporter logs worker status at regular intervals:
+Telemetry payloads are emitted at the configured cadence and logged with structured metadata:
 
 ```
-Worker Status:
-  Mode: inference_active
-  Active Inference Requests: 2
-  Pending Validation: None
+2024-05-01 12:00:00.123 | component=telemetry | INFO  | Heartbeat published | targets={'fed_ledger': True, 'webhook': None} mode=idle cache_models=2
 ```
 
-During validation:
-
-```
-Worker Status:
-  Mode: validation_active
-  Active Inference Requests: 0
-  Pending Validation: assignment_12345 (status: running)
-```
+The underlying `core.telemetry.HeartbeatReporter` captures worker mode, pending validation, cache inventory, GPU availability, and estimated network throughput. Other components can call `TelemetryReporter.get_latest_snapshot()` to inspect the most recent payload without waiting for the next publish cycle.
 
 ## Troubleshooting
 

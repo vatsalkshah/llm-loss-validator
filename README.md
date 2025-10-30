@@ -106,11 +106,26 @@ Key options:
 - `--inference_port`: Port for inference server (default `8000`)
 - `--polling_interval`: Validation polling interval in seconds (default `180`)
 - `--telemetry_interval`: Telemetry logging interval in seconds (default `60`)
+- `--telemetry_webhook`: HTTPS endpoint that should receive heartbeat payloads (optional)
+- `--telemetry_location`: Location metadata to include with telemetry reports (optional)
+- `--telemetry_worker_id`: Override worker identifier included in telemetry payloads (optional)
 - `--lora_only`: Whether to validate only LoRA submissions (default `True`)
 
 Operators transitioning from `loop` can reuse existing arguments and gain an inference endpoint.
 
 Additional details are available in [docs/dual-mode-worker.md](docs/dual-mode-worker.md).
+
+### Telemetry configuration
+
+Telemetry heartbeats can be tailored through CLI flags or the following environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `TELEMETRY_ENABLED` | Set to `false` to disable heartbeat publishing entirely. |
+| `TELEMETRY_INTERVAL_SECONDS` | Override the cadence (in seconds) between heartbeat reports. |
+| `TELEMETRY_WEBHOOK_URL` | HTTPS webhook that receives telemetry payloads in addition to FedLedger. |
+| `TELEMETRY_LOCATION` | Free-form location metadata attached to every payload. |
+| `TELEMETRY_WORKER_ID` | Explicit worker identifier reported in heartbeat payloads. |
 
 ## Inference API Server
 
