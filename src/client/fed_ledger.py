@@ -2,10 +2,10 @@ import requests
 
 
 class FedLedger:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: str = "https://fed-ledger-prod.flock.io/api", api_version: str = "v1"):
         self.api_key = api_key
-        self.base_url = "https://fed-ledger-prod.flock.io/api"
-        self.api_version = "v1"
+        self.base_url = base_url.rstrip("/")
+        self.api_version = api_version.strip("/")
         self.url = f"{self.base_url}/{self.api_version}"
         self.headers = {
             "flock-api-key": self.api_key,
@@ -42,3 +42,11 @@ class FedLedger:
             },
         )
         return response
+
+    def submit_heartbeat(self, worker_id: str, payload: dict):
+        url = f"{self.url}/workers/{worker_id}/heartbeat"
+        return requests.post(url, headers=self.headers, json=payload)
+
+    def submit_inference_metrics(self, worker_id: str, payload: dict):
+        url = f"{self.url}/workers/{worker_id}/inference-metrics"
+        return requests.post(url, headers=self.headers, json=payload)
