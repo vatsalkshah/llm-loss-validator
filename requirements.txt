@@ -12,6 +12,7 @@ tiktoken
 einops
 transformers_stream_generator
 tenacity
+requests>=2.31.0
 python-dotenv
 peft>=0.10.0
 gitpython
