@@ -1,5 +1,8 @@
 FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
 RUN apt-get update && apt-get install -y \
     python3-dev \
     python3-pip \
@@ -9,12 +12,16 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 
 WORKDIR /app
 
-COPY . .
+COPY requirements.txt ./
 
-RUN pip3 install -r requirements.txt
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r requirements.txt
+
+COPY . .
 
 WORKDIR /app/src
 
-ENV IS_DOCKER_CONTAINER=1
+ENV IS_DOCKER_CONTAINER=1 \
+    VALIDATION_ARGS_FILE=validation_config.json.example
 
-CMD ["sh", "-c", "bash start.sh --hf_token ${HF_TOKEN} --flock_api_key ${FLOCK_API_KEY} --task_id ${TASK_ID} --validation_args_file validation_config.json.example"]
+CMD ["bash", "-lc", "./start.sh --mode ${START_MODE:-dual}"]

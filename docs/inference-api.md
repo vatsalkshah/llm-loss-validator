@@ -28,6 +28,13 @@ cd src
 python -m server.main
 ```
 
+Alternatively, reuse the orchestration helper shared with validation workflows:
+
+```bash
+cd src
+./start.sh --mode inference --hf_token "$HF_TOKEN" --server_port 9000
+```
+
 The server will start on `http://0.0.0.0:8000` by default.
 
 ### Using Uvicorn directly
@@ -39,7 +46,7 @@ uvicorn server.main:app --host 0.0.0.0 --port 8000
 
 ## Configuration
 
-Configure the server using environment variables:
+Configure the server using environment variables (see [`configs/inference.env.example`](../configs/inference.env.example) for a starter file):
 
 ### Server Settings
 
@@ -58,6 +65,8 @@ Configure the server using environment variables:
 - `TLS_ENABLED`: Enable TLS (default: `false`)
 - `TLS_CERT_PATH`: Path to SSL certificate file
 - `TLS_KEY_PATH`: Path to SSL private key file
+
+When terminating TLS upstream (nginx, Caddy, load balancers), leave `TLS_ENABLED=false` and forward HTTP traffic internally. When enabling in-process TLS, mount certificates read-only and rotate them atomically to avoid reload errors.
 
 ### Logging
 

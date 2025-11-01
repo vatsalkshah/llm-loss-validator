@@ -50,6 +50,20 @@ The worker implements validation priority through the following mechanism:
 
 ## Usage
 
+### Quick Start with `start.sh`
+
+The helper script `src/start.sh` wraps the Click CLI and wiring for telemetry, cache controls, and TLS. From the repository root:
+
+```bash
+cd src
+./start.sh --mode dual \
+  --hf_token "$HF_TOKEN" \
+  --flock_api_key "$FLOCK_API_KEY" \
+  --task_id 12,27
+```
+
+For repeatable deployments, copy [`configs/dual-mode.env.example`](../configs/dual-mode.env.example) to a managed location and `source` it (or pass with `docker --env-file`), then invoke `./start.sh --mode "$START_MODE"`.
+
 ### Starting the Dual-Mode Worker
 
 ```bash
@@ -87,14 +101,14 @@ Required:
 - `HF_TOKEN`: HuggingFace authentication token
 
 Optional:
-- `CACHE_DIR`: Model cache directory
-- `CACHE_MAX_SIZE_GB`: Maximum cache size in GB
-- `CACHE_EVICTION_STRATEGY`: Eviction strategy (LRU, FIFO, SIZE)
-- `TELEMETRY_ENABLED`: Set to `false` to disable heartbeat publishing
-- `TELEMETRY_INTERVAL_SECONDS`: Override telemetry cadence (seconds)
-- `TELEMETRY_WEBHOOK_URL`: HTTPS endpoint for receiving heartbeat payloads
-- `TELEMETRY_LOCATION`: Location metadata attached to telemetry
-- `TELEMETRY_WORKER_ID`: Explicit worker identifier to report in telemetry
+- `CACHE_DIR`, `CACHE_MAX_SIZE_GB`, `CACHE_EVICTION_STRATEGY`, `CACHE_AUTO_EVICT`: Cache tuning knobs shared with the inference server.
+- `VALIDATION_ARGS_FILE`: Default validation config JSON consumed by the worker.
+- `START_MODE`: Default mode leveraged by `start.sh` (defaults to `dual`).
+- `INFERENCE_HOST`, `INFERENCE_PORT`, `POLLING_INTERVAL`: Command defaults when launching via `start.sh`.
+- `REQUIRE_API_KEY`, `API_KEY`, `API_KEY_HEADER`: Enable API key enforcement for inference traffic.
+- `TLS_ENABLED`, `TLS_CERT_PATH`, `TLS_KEY_PATH`: Enable TLS for the embedded inference server.
+- `REJECT_NON_CACHED_MODELS`: Reject inference requests when the model is absent from the cache.
+- `TELEMETRY_ENABLED`, `TELEMETRY_INTERVAL_SECONDS`, `TELEMETRY_WEBHOOK_URL`, `TELEMETRY_LOCATION`, `TELEMETRY_WORKER_ID`: Telemetry configuration surface.
 
 ## Backward Compatibility
 
@@ -160,6 +174,23 @@ Telemetry payloads are emitted at the configured cadence and logged with structu
 ```
 
 The underlying `core.telemetry.HeartbeatReporter` captures worker mode, pending validation, cache inventory, GPU availability, and estimated network throughput. Other components can call `TelemetryReporter.get_latest_snapshot()` to inspect the most recent payload without waiting for the next publish cycle.
+
+## Operational Considerations
+
+### TLS & Network Topology
+- When running inside a single container, enable TLS by exporting `TLS_ENABLED=true` and pointing `TLS_CERT_PATH`/`TLS_KEY_PATH` to mounted files.
+- If a reverse proxy terminates TLS, keep `TLS_ENABLED=false` and forward plain HTTP traffic over the loopback network.
+- Disable proxy buffering for `/v1/chat/completions` when streaming responses to avoid SSE truncation.
+
+### FedLedger Expectations
+- Assignment polling obeys FedLedger rate limits; adjust `POLLING_INTERVAL` (or CLI flag) if you consistently see rate limit warnings.
+- Successful validations invoke `FedLedger.submit_validation_result`; failures should be marked explicitly so the coordinator can reassign them.
+- Heartbeat payloads are acknowledged by FedLedger—monitor the `targets` log field for `fed_ledger=true` to confirm receipt.
+
+### Telemetry & Cache Health
+- Webhook fan-out requires HTTPS; failures surface as warnings with retry detail. Validate certificates when testing staging endpoints.
+- Cache utilisation is emitted in heartbeat payloads (`cache.utilization_percent`). Sudden drops typically indicate eviction triggered by policy.
+- Combine telemetry snapshots with `ModelCacheManager.get_cache_stats()` for deeper diagnostics of eviction behaviour.
 
 ## Troubleshooting
 
