@@ -6,7 +6,8 @@ COPY . .
 
 RUN pip3 install -r requirements.txt
 
-WORKDIR /app/src
+EXPOSE 8000
 
+ENV IS_DOCKER_CONTAINER=1
 
-CMD ["sh", "-c", "bash start.sh --hf_token ${HF_TOKEN} --flock_api_key ${FLOCK_API_KEY} --task_id ${TASK_ID} --validation_args_file validation_config_cpu.json.example"]
+CMD ["python", "-m", "src.entrypoint"]

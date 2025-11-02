@@ -1,6 +1,27 @@
 # llm-loss-validator
 
-Validator that computes the validation loss for a huggingface-compatible LLM
+Validator that computes the validation loss for a huggingface-compatible LLM.
+
+## Orchestrator API (priority validation + streaming inference)
+
+This repo now includes a FastAPI server that streams inference and prioritizes validation assignments.
+
+- Endpoints:
+  - `GET /ws/inference` (WebSocket): send `{ "model_id", "prompt", "gen" }`, receive token chunks and a final `{ "complete": true }`.
+  - `POST /inference`: body `{ "model_id", "prompt", "gen" }` -> `{ text, usage }`.
+  - `GET /heartbeat`: node metrics snapshot including GPU type, TPS EWMA, network I/O, cached models.
+  - `GET /models`: lists loaded/cached models.
+
+- Environment variables:
+  - `FLOCK_API_KEY` and `HF_TOKEN` required for validation/model downloads.
+  - `PORT` (default 8000), `HEARTBEAT_INTERVAL_SEC` (default 10), `NODE_LOCATION` (optional), `MODEL_CACHE_MAX` (default 2).
+  - `VALIDATION_TASK_ID` to enable background validation watcher.
+
+- Run locally:
+  ```bash
+  python -m src.entrypoint
+  ```
+  Then open `ws://localhost:8000/ws/inference` or `http://localhost:8000/inference`.
 
 ## Environment Setup
 

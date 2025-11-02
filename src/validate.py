@@ -540,6 +540,30 @@ def validate(
             os.system("rm -rf lora")
 
 
+def run_validation_assignment(assignment_payload: dict, validation_args_file: str = "validation_config.json.example", lora_only: bool = True) -> None:
+    """
+    Convenience callable to run a validation assignment outside of Click.
+    Expects the JSON payload returned by FedLedger.request_validation_assignment().
+    """
+    eval_file = download_file(assignment_payload["data"]["validation_set_url"])
+    try:
+        validate(
+            model_name_or_path=assignment_payload["task_submission"]["data"]["hg_repo_id"],
+            base_model=assignment_payload["data"]["base_model"],
+            eval_file=eval_file,
+            context_length=assignment_payload["data"]["context_length"],
+            max_params=assignment_payload["data"]["max_params"],
+            validation_args_file=validation_args_file,
+            assignment_id=assignment_payload["id"],
+            local_test=False,
+            lora_only=lora_only,
+            revision=assignment_payload["task_submission"]["data"].get("revision", "main"),
+        )
+    finally:
+        if os.path.exists(eval_file):
+            os.remove(eval_file)
+
+
 @click.command()
 @click.option(
     "--validation_args_file",
